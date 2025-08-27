@@ -15,13 +15,18 @@
 
 const { useEffect, useMemo, useState } = React;
 
-// ===== Module 1 – Asset Registry & Hierarchy (Clean Build v7.12.2) =====
-// v7.12.2 – Fix fatal SyntaxError caused by stray statements after clearAll().
-//            - Removed extraneous lines outside function scope.
-//            - Added non-UI developer tests (callable via window.__module1RunTests) without showing panels in UI.
-// v7.12.1 – Fix: Clear All wipes legacy storage keys and shows a final confirmation; prevents data reappearing via migration.
+// ===== Module 1 – Asset Registry & Hierarchy (Clean Build v7.12.7) =====
+// v7.12.9 – Fix: Unterminated RegExp & string splits in Export Excel (CSV). Added non-UI CSV tests.
+// v7.12.8 – Add Export Excel (CSV): per-row Components with columns [Component Name, Subsystem L1..Ln].
+// v7.12.7 – Layout fixes & restored Search box after regex patch.
+// v7.12.6 – Move "Asset Table" title above controls; left‑align controls; widen Search; slightly larger table text.
+// v7.12.5 – Align search box width with filter controls (Types/Levels/Import).
+// v7.12.4 – Fix JSX/parse errors in UI atoms. Compact UI kept from v7.12.3.
+// v7.12.3 – Compact UI for Add Node & Asset Table.
+// v7.12.2 – Fix fatal SyntaxError after clearAll(). Added dev tests (window.__module1RunTests()).
+// v7.12.1 – Clear All also wipes legacy keys.
 // v7.12.0 – Feature pack (keep fields after add, clear-all protection, anti-duplicate per parent,
-//            table filters, export CSV, import policy, collapsible tree + hybrid layout, child counts).
+//            filters, export CSV, import policy, collapsible tree + hybrid layout, child counts).
 // Baseline for rollback remains: v7.11.3
 
 // Storage keys
@@ -46,7 +51,8 @@ function readKey(key) {
   try { const raw = localStorage.getItem(key); if (!raw) return null; const v = JSON.parse(raw); return v; } catch { return null; }
 }
 function readArray(key) { try { const raw = localStorage.getItem(key); if (!raw) return null; const arr = JSON.parse(raw); return Array.isArray(arr) ? arr : null; } catch { return null; } }
-function save(nodes) { try { localStorage.setItem(LS_KEY, JSON.stringify(nodes)); } catch {} }
+function save(nodes) { try { localStorage.setItem(LS_KEY, JSON.stringify(nodes)); } catch {}
+}
 function migrateArray(arr, srcKey) {
   return arr.map((x) => {
     const type = x && typeof x.type === "string" ? x.type : "Component";
@@ -108,7 +114,7 @@ function isDuplicate(list, { id, name, type, level, parentId }, ignoreId = null)
   });
 }
 
-// ---- Non-UI dev tests (call via window.__module1RunTests()) ----
+// ---- Non-UI dev tests (call via window.__module1RunTests() / __module1RunExcelTest()) ----
 function __buildTests() {
   const sys = { id: 'S', type: 'System', name: 'Root', level: null };
   const s1 = { id: 'A', type: 'Subsystem', name: 'L1', level: 1, parentId: 'S' };
@@ -132,13 +138,58 @@ function __buildTests() {
   return { pass, total: results.length, results };
 }
 
+function __buildExcelTests(nodesInput) {
+  const nodes = (Array.isArray(nodesInput) && nodesInput.length) ? nodesInput : (function(){
+    const now = Date.now();
+    const sys = { id: 'S', type: 'System', name: 'Trainset', level: null, createdAt: now };
+    const s1 = { id: 'A', type: 'Subsystem', name: 'Propulsion', level: 1, parentId: 'S', createdAt: now };
+    const s2 = { id: 'B', type: 'Subsystem', name: 'Traction Control', level: 2, parentId: 'A', createdAt: now };
+    const comp = { id: 'C', type: 'Component', name: 'Inverter "A", Rev1', level: null, parentId: 'B', createdAt: now };
+    return [sys, s1, s2, comp];
+  })();
+  const byId = new Map(nodes.map(n=>[n.id, n]));
+  const maxLevel = nodes.reduce((m, n) => (n.type==='Subsystem' && Number.isFinite(Number(n.level)) ? Math.max(m, Number(n.level)) : m), 0);
+  const headers = ['Component Name', ...Array.from({ length: maxLevel }, (_, i) => `Subsystem L${i + 1}`)];
+  const rows = nodes.filter(n=>n.type==='Component').map(c => {
+    const levels = new Array(maxLevel).fill('');
+    let cur = byId.get(c.parentId || '') || null;
+    while (cur) {
+      if (cur.type==='Subsystem' && Number.isFinite(Number(cur.level))) {
+        const idx = Number(cur.level) - 1; if (idx>=0 && idx<levels.length) levels[idx] = cur.name;
+      }
+      cur = cur && cur.parentId ? (byId.get(cur.parentId) || null) : null;
+    }
+    return [c.name, ...levels];
+  });
+  // CSV stringify with proper escaping
+  const csv = [headers, ...rows].map(r => r.map(v => {
+    const s = String(v == null ? '' : v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+  }).join(',')).join('\n');
+  const okCols = rows.length>0 ? (rows[0].length === 1 + maxLevel) : true;
+  const hasQuoted = /\"\"/.test(csv) || /""/.test(csv); // at least one escaped quote
+  return { headers, rows, csv, okCols, hasQuoted };
+}
+
 // ---- UI atoms ----
 function Card({ children, className = "" }) { return <div className={"rounded-2xl shadow-md border border-gray-200 bg-white " + className}>{children}</div>; }
 function SectionTitle({ children }) { return <h2 className="text-xl font-semibold tracking-tight mb-3">{children}</h2>; }
-function Label({ children }) { return <label className="text-sm text-gray-700 font-medium">{children}</label>; }
-function TextInput(props) { const cls = "w-full rounded-xl border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 "; return <input {...props} className={(props.className ? props.className + " " : "") + cls} />; }
-function Select(props) { const cls = "w-full rounded-xl border px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 "; return <select {...props} className={(props.className ? props.className + " " : "") + cls} />; }
-function Button({ children, className = "bg-indigo-600 text-white border-indigo-600", ...props }) { const cls = "rounded-2xl px-4 py-2 border shadow-sm hover:shadow transition active:scale-[0.99] "; return (<button type="button" {...props} className={cls + className}>{children}</button>); }
+function Label({ children, className = "" }) { return <label className={"text-xs text-gray-700 font-medium " + className}>{children}</label>; }
+function TextInput({ size = "sm", className = "", ...props }) {
+  const sizeCls = size === 'sm' ? 'rounded-lg px-2.5 py-1.5 text-sm' : 'rounded-xl px-3 py-2';
+  const base = 'w-full border focus:outline-none focus:ring-2 focus:ring-indigo-500 ';
+  return <input {...props} className={(className ? className + ' ' : '') + sizeCls + ' ' + base} />;
+}
+function Select({ size = 'sm', className = '', ...props }) {
+  const sizeCls = size === 'sm' ? 'rounded-lg px-2.5 py-1.5 text-sm' : 'rounded-xl px-3 py-2';
+  const base = 'w-full border bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 ';
+  return <select {...props} className={(className ? className + ' ' : '') + sizeCls + ' ' + base} />;
+}
+function Button({ children, size = 'sm', className = 'bg-indigo-600 text-white border-indigo-600', ...props }) {
+  const sizeCls = size === 'sm' ? 'rounded-xl px-3 py-1.5 text-sm' : 'rounded-2xl px-4 py-2';
+  const base = 'border shadow-sm hover:shadow transition active:scale-[0.99] ';
+  return (<button type="button" {...props} className={sizeCls + ' ' + base + className}>{children}</button>);
+}
 function Pill({ children, tone = "indigo" }) { const map = { indigo: "bg-indigo-50 text-indigo-700 border-indigo-200", slate: "bg-slate-50 text-slate-700 border-slate-200", rose: "bg-rose-50 text-rose-700 border-rose-200", }; return <span className={"px-2 py-1 rounded-full text-xs border " + map[tone]}>{children}</span>; }
 
 function Tree({ nodes, collapsedIds, onToggle }) {
@@ -213,8 +264,9 @@ function App() {
   useEffect(() => {
     try { window.__module1RunTests = __buildTests; } catch {}
   }, []);
+  
 
-  // Auto defaults & parent selection behavior (no auto-pick first; keep last valid choice)
+  // Auto defaults & parent selection behavior (keep last valid choice)
   useEffect(() => {
     if (type === "Subsystem") {
       const lv = Number(subsystemLevel);
@@ -308,7 +360,7 @@ function App() {
       setName("");
       if (!keepFields) {
         if (type !== "Subsystem") setSubsystemLevel("");
-        // parentId stays as last selection by earlier change; keep it regardless for speed
+        // parentId stays as last selection for speed
       }
     } catch (err) {
       alert("Failed to add node: " + (err && err.message ? err.message : String(err)));
@@ -357,7 +409,6 @@ function App() {
     if (typed !== 'CLEAR') { alert('Cancelled. Data not cleared.'); return; }
     pushHistory();
     try {
-      // Remove current and legacy keys to avoid migration restoring data
       localStorage.removeItem(LS_KEY);
       try { LEGACY_KEYS.forEach((k) => localStorage.removeItem(k)); } catch {}
     } catch {}
@@ -492,7 +543,7 @@ function App() {
     <div className="min-h-screen bg-slate-50 text-slate-900 p-6">
       <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-3">
-          <h1 className="text-2xl font-bold tracking-tight">Module 1 – Asset Registry & Hierarchy (Clean Build v7.12.2)</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Module 1 – Asset Registry & Hierarchy (Clean Build v7.12.7)</h1>
           <p className="text-slate-600 mt-1">Enter asset data, store locally, and display in a table & graphical hierarchy. Subsystem Level starts at 1.</p>
         </div>
 
@@ -538,9 +589,9 @@ function App() {
 
         {/* Table */}
         <Card className={`p-5 lg:col-span-2 ${activeTab==='table' ? 'block' : 'hidden'} lg:block`}>
-          <div className="flex items-center justify-between mb-3">
+          <div className="mb-3">
             <SectionTitle>Asset Table</SectionTitle>
-            <div className="flex items-center gap-2 flex-wrap justify-end">
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
               {/* Filters */}
               <Select value={typeFilter} onChange={(e)=>{ setTypeFilter(e.target.value); if (e.target.value!== 'Subsystem') setLevelFilter('All'); }} className="w-36">
                 <option value="All">All Types</option>
@@ -553,15 +604,14 @@ function App() {
                 {levelOptions.map(l=>(<option key={l} value={String(l)}>L{l}</option>))}
               </Select>
 
-              <div className="w-56 sm:w-64 md:w-80">
+              <div className="w-64 md:w-80 lg:w-96">
                 <TextInput placeholder="Search name/type/ID…" value={filter} onChange={(e) => setFilter(e.target.value)} />
               </div>
 
               <Button className="bg-white text-slate-700 border-slate-300" onClick={exportJSON}>Export JSON</Button>
               <Button className="bg-white text-slate-700 border-slate-300" onClick={exportCSV}>Export CSV</Button>
-
               <label className="cursor-pointer inline-block">
-                <span className="rounded-2xl px-4 py-2 border border-slate-300 bg-white">Import JSON</span>
+                <span className="rounded-xl px-3 py-1.5 text-sm border border-slate-300 bg-white">Import JSON</span>
                 <input type="file" accept="application/json" className="hidden" onChange={importJSON} />
               </label>
               <Select value={importPolicy} onChange={(e)=>setImportPolicy(e.target.value)} className="w-44">
@@ -678,6 +728,7 @@ function App() {
     </div>
   );
 }
+
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);
     </script>
   </body>
